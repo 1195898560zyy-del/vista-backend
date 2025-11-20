@@ -1,78 +1,88 @@
-// ----------------------
-// VISTA Backend — Final Clean Working Version
-// ----------------------
+// =======================
+// VISTA Backend — Full Version
+// Supports Unsplash paging + OpenAI generation
+// =======================
 
 const express = require("express");
 const cors = require("cors");
+const fetch = require("node-fetch");
 const dotenv = require("dotenv");
-const fetch = (...args) => import('node-fetch').then(({default: fetch}) => fetch(...args));
 
-// Load environment variables
-dotenv.config();
+dotenv.config({ path: __dirname + "/.env" });
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ----------------------
-// TEST ROUTE
-// ----------------------
+// Test route
 app.get("/", (req, res) => {
   res.send("VISTA backend is running.");
 });
 
-// ----------------------
-// UNSPLASH
-// ----------------------
+// =======================
+// UNSPLASH — SUPPORT PAGING
+// =======================
 app.get("/api/unsplash", async (req, res) => {
   const q = req.query.q;
   if (!q) {
-    return res.status(400).json({ error: "Missing q parameter" });
+    return res.status(400).json({ error: "Missing ?q=" });
   }
 
+  const page = Number(req.query.page || 1);
+  const perPage = 30;
+
   try {
-    const url = `https://api.unsplash.com/search/photos?query=${encodeURIComponent(q)}&page=1&per_page=10`;
+    const url =
+      `https://api.unsplash.com/search/photos?` +
+      `query=${encodeURIComponent(q)}` +
+      `&page=${page}` +
+      `&per_page=${perPage}` +
+      `&client_id=${process.env.UNSPLASH_KEY}`;
 
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Client-ID ${process.env.UNSPLASH_KEY}`,
-      },
-    });
+    const r = await fetch(url);
+    const data = await r.json();
 
-    const raw = await response.json();
-
-    if (raw.errors) {
-      return res.status(500).json({ error: raw.errors });
+    if (data.errors) {
+      return res.status(500).json({ error: data.errors });
     }
 
-    const images = raw.results?.map((r) => r.urls?.regular) || [];
+    const images = data.results?.map(x => x.urls.regular) || [];
 
-    res.json({ images });
+    res.json({
+      images,
+      page,
+      totalPages: data.total_pages || 1
+    });
+
   } catch (err) {
     console.error("Unsplash Error:", err);
     res.status(500).json({ error: "Unsplash proxy failed" });
   }
 });
 
-// ----------------------
+// =======================
 // OPENAI IMAGE GENERATION
-// ----------------------
+// =======================
 app.post("/api/generate", async (req, res) => {
   try {
-    const { prompt, model, size } = req.body;
+    const { prompt, size, model } = req.body;
+
+    if (!prompt) {
+      return res.status(400).json({ error: "Missing prompt" });
+    }
 
     const response = await fetch("https://api.openai.com/v1/images/generations", {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${process.env.OPENAI_KEY}`,
+        "Authorization": `Bearer ${process.env.OPENAI_KEY}`
       },
       body: JSON.stringify({
         prompt,
-        model: model || "gpt-image-1",
         n: 3,
         size: size || "1024x1024",
-      }),
+        model: model || "gpt-image-1"
+      })
     });
 
     const data = await response.json();
@@ -84,11 +94,10 @@ app.post("/api/generate", async (req, res) => {
   }
 });
 
-// ----------------------
-// START SERVER
-// ----------------------
+// =======================
+// Start server
+// =======================
 const PORT = process.env.PORT || 3000;
-
-app.listen(PORT, "0.0.0.0", () => {
+app.listen(PORT, () => {
   console.log(`🚀 VISTA backend running at http://localhost:${PORT}`);
 });
