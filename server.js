@@ -433,6 +433,79 @@ app.post("/api/replicate", async (req, res) => {
 });
 
 // =======================================================
+// 7) REPLICATE — Flux Kontext Pro (image refine)
+// =======================================================
+app.post("/api/refine", async (req, res) => {
+  const { prompt, input_image } = req.body;
+
+  if (!prompt || !input_image) {
+    return res.status(400).json({ error: "Missing prompt or input_image" });
+  }
+
+  try {
+    const token = process.env.REPLICATE_API_TOKEN || process.env.REPLICATE_API_KEY;
+    if (!token) {
+      return res.status(500).json({ error: "Missing REPLICATE_API_TOKEN" });
+    }
+
+    const response = await fetch(
+      "https://api.replicate.com/v1/models/black-forest-labs/flux-kontext-pro/predictions",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${token}`
+        },
+        body: JSON.stringify({
+          input: {
+            prompt,
+            input_image,
+            output_format: "jpg"
+          }
+        })
+      }
+    );
+
+    let prediction = await response.json();
+    if (!response.ok) {
+      return res.status(500).json({ error: prediction.error || "Replicate request failed" });
+    }
+
+    const startedAt = Date.now();
+    while (
+      prediction.status !== "succeeded" &&
+      prediction.status !== "failed" &&
+      prediction.status !== "canceled"
+    ) {
+      if (Date.now() - startedAt > 120000) {
+        return res.status(500).json({ error: "Replicate request timed out" });
+      }
+      await new Promise((r) => setTimeout(r, 1200));
+      const poll = await fetch(prediction.urls.get, {
+        headers: { Authorization: `Bearer ${token}` }
+      });
+      prediction = await poll.json();
+    }
+
+    if (prediction.status !== "succeeded") {
+      return res.status(500).json({ error: prediction.error || "Replicate failed" });
+    }
+
+    const output = prediction.output;
+    const imageUrl = output && output.url ? output.url : output;
+    if (!imageUrl) {
+      return res.status(500).json({ error: "No output image" });
+    }
+
+    res.json({ image: imageUrl });
+
+  } catch (err) {
+    console.error("Refine Error:", err);
+    res.status(500).json({ error: "Refine request failed" });
+  }
+});
+
+// =======================================================
 // Start server
 // =======================================================
 const PORT = process.env.PORT || 3000;
