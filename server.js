@@ -131,15 +131,26 @@ app.get("/api/unsplash", async (req, res) => {
   const page = Number(req.query.page || 1);
   const perPage = 30;
   const random = req.query.random === "1" || req.query.random === "true";
+  const ratio = req.query.ratio || "";
+  const orientation = ratio.startsWith("1:1")
+    ? "squarish"
+    : (ratio === "4:3" || ratio === "16:9")
+      ? "landscape"
+      : (ratio === "3:4" || ratio === "9:16")
+        ? "portrait"
+        : "";
 
   try {
+    const orientationParam = orientation ? `&orientation=${orientation}` : "";
     const url = random
       ? `https://api.unsplash.com/photos/random?query=${encodeURIComponent(q)}` +
         `&count=${perPage}` +
+        `${orientationParam}` +
         `&client_id=${process.env.UNSPLASH_KEY}`
       : `https://api.unsplash.com/search/photos?query=${encodeURIComponent(q)}` +
         `&page=${page}` +
         `&per_page=${perPage}` +
+        `${orientationParam}` +
         `&client_id=${process.env.UNSPLASH_KEY}`;
 
     const r = await fetch(url);
@@ -173,10 +184,19 @@ app.get("/api/pexels", async (req, res) => {
   const random = req.query.random === "1" || req.query.random === "true";
   const page = Number(req.query.page || 1);
   const pickPage = random ? Math.floor(Math.random() * 50) + 1 : page;
+  const ratio = req.query.ratio || "";
+  const orientation = ratio.startsWith("1:1")
+    ? "square"
+    : (ratio === "4:3" || ratio === "16:9")
+      ? "landscape"
+      : (ratio === "3:4" || ratio === "9:16")
+        ? "portrait"
+        : "";
 
   try {
+    const orientationParam = orientation ? `&orientation=${orientation}` : "";
     const r = await fetch(
-      `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=30&page=${pickPage}`,
+      `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=30&page=${pickPage}${orientationParam}`,
       {
         headers: { Authorization: process.env.PEXELS_KEY }
       }
@@ -192,7 +212,7 @@ app.get("/api/pexels", async (req, res) => {
 
     if (random && images.length === 0) {
       const retry = await fetch(
-        `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=30&page=1`,
+        `https://api.pexels.com/v1/search?query=${encodeURIComponent(q)}&per_page=30&page=1${orientationParam}`,
         {
           headers: { Authorization: process.env.PEXELS_KEY }
         }
