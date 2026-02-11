@@ -1,6 +1,6 @@
 // =======================
 // VISTA Backend — Ultimate Version
-// Supports Unsplash + Pexels + Lexica + AI + AI Batch
+// Supports Unsplash + Pexels + AI + AI Batch
 // =======================
 
 const express = require("express");
@@ -17,7 +17,6 @@ app.use(express.json());
 app.use(express.static(path.join(__dirname, "..", "vistapj")));
 
 const sessions = new Map();
-const lexicaCache = new Map();
 
 function createSessionId() {
   return (
@@ -235,68 +234,7 @@ app.get("/api/pexels", async (req, res) => {
 
 
 // =======================================================
-// 3) LEXICA — PUBLIC API, AI-STYLE GALLERY
-// =======================================================
-app.get("/api/lexica", async (req, res) => {
-  const q = req.query.q;
-  if (!q) return res.status(400).json({ error: "Missing ?q=" });
-  const page = Number(req.query.page || 1);
-  const perPage = 30;
-
-  try {
-    const cacheKey = q.toLowerCase();
-    const cached = lexicaCache.get(cacheKey);
-    const now = Date.now();
-
-    let images = cached && now - cached.ts < 2 * 60 * 1000 ? cached.images : null;
-
-    if (!images) {
-      let r = await fetch(`https://lexica.art/api/v1/search?q=${encodeURIComponent(q)}`);
-      const contentType = r.headers.get("content-type") || "";
-
-      if (!r.ok || !contentType.includes("application/json")) {
-        const text = await r.text();
-        // Retry once on upstream error pages
-        if (r.status >= 500) {
-          r = await fetch(`https://lexica.art/api/v1/search?q=${encodeURIComponent(q)}`);
-          const ct2 = r.headers.get("content-type") || "";
-          if (!r.ok || !ct2.includes("application/json")) {
-            const text2 = await r.text();
-            return res.status(500).json({ error: `Lexica ${r.status}: ${text2}` });
-          }
-        } else {
-          return res.status(500).json({ error: `Lexica ${r.status}: ${text}` });
-        }
-      }
-
-      const data = await r.json();
-      images = data.images?.map(x => x.src) || [];
-
-      // Shuffle for variety
-      for (let i = images.length - 1; i > 0; i -= 1) {
-        const j = Math.floor(Math.random() * (i + 1));
-        [images[i], images[j]] = [images[j], images[i]];
-      }
-
-      lexicaCache.set(cacheKey, { images, ts: now });
-    }
-
-    if (!images.length) return res.json({ images: [] });
-
-    const start = ((page - 1) % Math.ceil(images.length / perPage)) * perPage;
-    const slice = images.slice(start, start + perPage);
-
-    res.json({ images: slice, page });
-
-  } catch (err) {
-    console.error("Lexica Error:", err);
-    res.status(500).json({ error: "Lexica proxy failed" });
-  }
-});
-
-
-// =======================================================
-// 4) OPENAI — SINGLE IMAGE GENERATION
+// 3) OPENAI — SINGLE IMAGE GENERATION
 // =======================================================
 app.post("/api/generate", async (req, res) => {
   try {
