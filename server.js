@@ -131,6 +131,7 @@ app.get("/api/unsplash", async (req, res) => {
   const perPage = 30;
   const random = req.query.random === "1" || req.query.random === "true";
   const ratio = req.query.ratio || "";
+  const width = Number(req.query.w || 0);
   const orientation = ratio.startsWith("1:1")
     ? "squarish"
     : (ratio === "4:3" || ratio === "16:9")
@@ -159,7 +160,13 @@ app.get("/api/unsplash", async (req, res) => {
       return res.status(500).json({ error: data.errors });
 
     const results = Array.isArray(data) ? data : (data.results || []);
-    const images = results.map(x => x.urls.regular);
+    const images = results.map((x) => {
+      if (!x || !x.urls) return null;
+      if (width > 0 && x.urls.raw) {
+        return `${x.urls.raw}&w=${width}&auto=format&fit=crop`;
+      }
+      return x.urls.regular;
+    }).filter(Boolean);
 
     res.json({
       images,
