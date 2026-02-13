@@ -234,7 +234,56 @@ app.get("/api/pexels", async (req, res) => {
 
 
 // =======================================================
-// 3) OPENAI — SINGLE IMAGE GENERATION
+// 3) WEATHER — OPENWEATHER PROXY
+// =======================================================
+app.get("/api/weather", async (req, res) => {
+  const lat = Number(req.query.lat);
+  const lon = Number(req.query.lon);
+
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) {
+    return res.status(400).json({ error: "Missing or invalid lat/lon" });
+  }
+
+  const key = process.env.WEATHER_API_KEY;
+  if (!key) {
+    return res.status(500).json({ error: "Missing WEATHER_API_KEY" });
+  }
+
+  try {
+    const url = `https://api.openweathermap.org/data/2.5/weather` +
+      `?lat=${encodeURIComponent(lat)}` +
+      `&lon=${encodeURIComponent(lon)}` +
+      `&units=metric` +
+      `&appid=${encodeURIComponent(key)}`;
+
+    const r = await fetch(url);
+    const data = await r.json();
+
+    if (!r.ok) {
+      return res.status(500).json({ error: data.message || "Weather request failed" });
+    }
+
+    const info = data.weather && data.weather[0] ? data.weather[0] : {};
+    res.json({
+      city: data.name,
+      temp: data.main ? data.main.temp : null,
+      description: info.description || "",
+      main: info.main || "",
+      icon: info.icon || "",
+      humidity: data.main ? data.main.humidity : null,
+      wind: data.wind ? data.wind.speed : null,
+      dt: data.dt,
+      timezone: data.timezone
+    });
+  } catch (err) {
+    console.error("Weather Error:", err);
+    res.status(500).json({ error: "Weather proxy failed" });
+  }
+});
+
+
+// =======================================================
+// 4) OPENAI — SINGLE IMAGE GENERATION
 // =======================================================
 app.post("/api/generate", async (req, res) => {
   try {
