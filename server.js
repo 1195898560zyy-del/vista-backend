@@ -121,6 +121,244 @@ app.get("/api/status", (req, res) => {
 });
 
 // =======================================================
+// AGENT ROUTER + EXECUTOR (SEARCH/GENERATE/REFINE)
+// =======================================================
+async function callOpenAI(messages, tools) {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY;
+  if (!apiKey) {
+    throw new Error("Missing OPENAI_API_KEY");
+  }
+
+  const model = process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini";
+  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${apiKey}`
+    },
+    body: JSON.stringify({
+      model,
+      messages,
+      tools,
+      tool_choice: "auto",
+      temperature: 0.6
+    })
+  });
+
+  const data = await r.json();
+  if (!r.ok) {
+    throw new Error(data.error?.message || "OpenAI chat failed");
+  }
+  return data;
+}
+
+async function executeToolCall(toolCall) {
+  const name = toolCall.function.name;
+  const args = JSON.parse(toolCall.function.arguments || "{}");
+  const localBase = `http://localhost:${process.env.PORT || 3000}`;
+  const baseUrl = process.env.PUBLIC_BASE_URL || localBase;
+
+  if (name === "search_library") {
+    const { query, source, ratio } = args;
+    if (!query || !source) {
+      throw new Error("Missing query/source");
+    }
+    if (source === "unsplash") {
+      const r = await fetch(
+        `${baseUrl}/api/unsplash` +
+          `?q=${encodeURIComponent(query)}` +
+          `&random=1` +
+          `&ratio=${encodeURIComponent(ratio || "1:1")}`
+      );
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        throw new Error(data.error || "Unsplash failed");
+      }
+      return { images: data.images || [], source };
+    }
+    if (source === "pexels") {
+      const r = await fetch(
+        `${baseUrl}/api/pexels` +
+          `?q=${encodeURIComponent(query)}` +
+          `&random=1` +
+          `&ratio=${encodeURIComponent(ratio || "1:1")}`
+      );
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        throw new Error(data.error || "Pexels failed");
+      }
+      return { images: data.images || [], source };
+    }
+    throw new Error("Unsupported source");
+  }
+
+  if (name === "generate_ai") {
+    const { prompt, count, aspect_ratio } = args;
+    if (!prompt) throw new Error("Missing prompt");
+    const r = await fetch(
+      `${baseUrl}/api/replicate`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          count: count || 1,
+          aspect_ratio: aspect_ratio || "1:1"
+        })
+      }
+    );
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      throw new Error(data.error || "Flux failed");
+    }
+    return { images: data.images || [] };
+  }
+
+  if (name === "refine_image") {
+    const { prompt, input_image } = args;
+    if (!prompt || !input_image) throw new Error("Missing prompt/input_image");
+    const r = await fetch(
+      `${baseUrl}/api/refine`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          prompt,
+          input_image
+        })
+      }
+    );
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      throw new Error(data.error || "Refine failed");
+    }
+    return { image: data.image || "" };
+  }
+
+  throw new Error("Unknown tool");
+}
+
+app.post("/api/agent", async (req, res) => {
+  const { message, summary, state } = req.body || {};
+  if (!message) {
+    return res.status(400).json({ error: "Missing message" });
+  }
+
+  const tools = [
+    {
+      type: "function",
+      function: {
+        name: "search_library",
+        description: "Search images from a library source.",
+        parameters: {
+          type: "object",
+          properties: {
+            query: { type: "string" },
+            source: { type: "string", enum: ["unsplash", "pexels"] },
+            ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
+          },
+          required: ["query", "source"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "generate_ai",
+        description: "Generate images with Flux.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string" },
+            count: { type: "integer", minimum: 1, maximum: 5 },
+            aspect_ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
+          },
+          required: ["prompt"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "refine_image",
+        description: "Refine a single image with Flux Kontext.",
+        parameters: {
+          type: "object",
+          properties: {
+            prompt: { type: "string" },
+            input_image: { type: "string" }
+          },
+          required: ["prompt", "input_image"]
+        }
+      }
+    }
+  ];
+
+  const system = [
+    "You are VISTA Agent. You can chat normally or call a tool.",
+    "Use tools only when user intent requires system action.",
+    "If required parameters are missing, ask a brief question instead of calling tools.",
+    "Never claim you executed a tool unless you actually called it."
+  ].join(" ");
+
+  const userContext = [
+    summary ? `Conversation summary: ${summary}` : null,
+    state ? `Global state: ${JSON.stringify(state)}` : null,
+    `User message: ${message}`
+  ].filter(Boolean).join("\n");
+
+  try {
+    const first = await callOpenAI(
+      [
+        { role: "system", content: system },
+        { role: "user", content: userContext }
+      ],
+      tools
+    );
+
+    const choice = first.choices && first.choices[0] ? first.choices[0] : null;
+    const msg = choice ? choice.message : null;
+    if (!msg) {
+      return res.status(500).json({ error: "Agent failed" });
+    }
+
+    if (msg.tool_calls && msg.tool_calls.length) {
+      const toolCall = msg.tool_calls[0];
+      const result = await executeToolCall(toolCall);
+      const second = await callOpenAI(
+        [
+          { role: "system", content: system },
+          { role: "user", content: userContext },
+          msg,
+          {
+            role: "tool",
+            tool_call_id: toolCall.id,
+            content: JSON.stringify(result)
+          }
+        ],
+        tools
+      );
+
+      const finalMsg = second.choices && second.choices[0] ? second.choices[0].message : null;
+      return res.json({
+        reply: finalMsg?.content || "",
+        tool: toolCall.function.name,
+        result
+      });
+    }
+
+    return res.json({
+      reply: msg.content || "",
+      tool: null,
+      result: null
+    });
+  } catch (err) {
+    console.error("Agent Error:", err);
+    res.status(500).json({ error: err.message || "Agent failed" });
+  }
+});
+
+// =======================================================
 // 1) UNSPLASH — PAGINATION SUPPORT
 // =======================================================
 app.get("/api/unsplash", async (req, res) => {
