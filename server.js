@@ -324,6 +324,7 @@ app.post("/api/agent", async (req, res) => {
 
     if (msg.tool_calls && msg.tool_calls.length) {
       const toolCall = msg.tool_calls[0];
+      const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
       const result = await executeToolCall(toolCall);
       const second = await callOpenAI(
         [
@@ -343,7 +344,8 @@ app.post("/api/agent", async (req, res) => {
       return res.json({
         reply: finalMsg?.content || "",
         tool: toolCall.function.name,
-        result
+        result,
+        tool_args: toolArgs
       });
     }
 
