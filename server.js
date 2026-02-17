@@ -162,14 +162,14 @@ app.post("/api/transcribe", async (req, res) => {
 // =======================================================
 // AGENT ROUTER + EXECUTOR (SEARCH/GENERATE/REFINE)
 // =======================================================
-async function callOpenAI(messages, tools) {
+async function callOpenAIResponses({ input, tools, previous_response_id, tool_outputs }) {
   const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY;
   if (!apiKey) {
     throw new Error("Missing OPENAI_API_KEY");
   }
 
   const model = process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini";
-  const r = await fetch("https://api.openai.com/v1/chat/completions", {
+  const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -177,32 +177,50 @@ async function callOpenAI(messages, tools) {
     },
     body: JSON.stringify({
       model,
-      messages,
+      input,
       tools,
       tool_choice: "auto",
-      temperature: 0.6
+      temperature: 0.6,
+      previous_response_id,
+      tool_outputs
     })
   });
 
   const data = await r.json();
   if (!r.ok) {
-    throw new Error(data.error?.message || "OpenAI chat failed");
+    throw new Error(data.error?.message || "OpenAI responses failed");
   }
   return data;
 }
 
 async function executeToolCall(toolCall) {
-  const name = toolCall.function.name;
-  const args = JSON.parse(toolCall.function.arguments || "{}");
+  const name = (toolCall.function && toolCall.function.name) || toolCall.name;
+  const rawArgs =
+    (toolCall.function && toolCall.function.arguments) ||
+    toolCall.arguments ||
+    toolCall.arguments_json ||
+    "{}";
+  let args = {};
+  if (typeof rawArgs === "string") {
+    try {
+      args = JSON.parse(rawArgs);
+    } catch (err) {
+      args = {};
+    }
+  } else if (rawArgs && typeof rawArgs === "object") {
+    args = rawArgs;
+  }
   const localBase = `http://localhost:${process.env.PORT || 3000}`;
   const baseUrl = process.env.PUBLIC_BASE_URL || localBase;
 
   if (name === "search_library") {
     const { query, source, ratio } = args;
-    if (!query || !source) {
-      throw new Error("Missing query/source");
+    if (!query) {
+      throw new Error("Missing query");
     }
-    if (source === "unsplash") {
+    const selectedSource =
+      source === "pexels" || source === "unsplash" ? source : "unsplash";
+    if (selectedSource === "unsplash") {
       const r = await fetch(
         `${baseUrl}/api/unsplash` +
           `?q=${encodeURIComponent(query)}` +
@@ -213,9 +231,9 @@ async function executeToolCall(toolCall) {
       if (!r.ok || data.error) {
         throw new Error(data.error || "Unsplash failed");
       }
-      return { images: data.images || [], source };
+      return { images: data.images || [], source: selectedSource };
     }
-    if (source === "pexels") {
+    if (selectedSource === "pexels") {
       const r = await fetch(
         `${baseUrl}/api/pexels` +
           `?q=${encodeURIComponent(query)}` +
@@ -226,7 +244,7 @@ async function executeToolCall(toolCall) {
       if (!r.ok || data.error) {
         throw new Error(data.error || "Pexels failed");
       }
-      return { images: data.images || [], source };
+      return { images: data.images || [], source: selectedSource };
     }
     throw new Error("Unsupported source");
   }
@@ -284,6 +302,49 @@ async function executeToolCall(toolCall) {
     return { ok: true };
   }
 
+  if (name === "get_weather_history") {
+    const { city, date } = args || {};
+    if (!city || !date) {
+      throw new Error("Missing city/date");
+    }
+    const geoUrl =
+      `https://geocoding-api.open-meteo.com/v1/search` +
+      `?name=${encodeURIComponent(city)}` +
+      `&count=1&language=en&format=json`;
+    const geoRes = await fetch(geoUrl);
+    const geoData = await geoRes.json();
+    if (!geoRes.ok || !geoData || !geoData.results || !geoData.results.length) {
+      throw new Error("City not found");
+    }
+    const place = geoData.results[0];
+    const lat = place.latitude;
+    const lon = place.longitude;
+    const day = String(date).slice(0, 10);
+    const historyUrl =
+      `https://archive-api.open-meteo.com/v1/archive` +
+      `?latitude=${encodeURIComponent(lat)}` +
+      `&longitude=${encodeURIComponent(lon)}` +
+      `&start_date=${encodeURIComponent(day)}` +
+      `&end_date=${encodeURIComponent(day)}` +
+      `&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,windspeed_10m_max` +
+      `&timezone=auto`;
+    const historyRes = await fetch(historyUrl);
+    const historyData = await historyRes.json();
+    if (!historyRes.ok || !historyData || !historyData.daily) {
+      throw new Error("Weather history failed");
+    }
+    const daily = historyData.daily;
+    return {
+      city: place.name,
+      country: place.country || "",
+      date: day,
+      temperature_max: daily.temperature_2m_max ? daily.temperature_2m_max[0] : null,
+      temperature_min: daily.temperature_2m_min ? daily.temperature_2m_min[0] : null,
+      precipitation_sum: daily.precipitation_sum ? daily.precipitation_sum[0] : null,
+      windspeed_max: daily.windspeed_10m_max ? daily.windspeed_10m_max[0] : null
+    };
+  }
+
   throw new Error("Unknown tool");
 }
 
@@ -296,74 +357,77 @@ app.post("/api/agent", async (req, res) => {
   const tools = [
     {
       type: "function",
-      function: {
-        name: "search_library",
-        description: "Search images from a library source.",
-        parameters: {
-          type: "object",
-          properties: {
-            query: { type: "string" },
-            source: { type: "string", enum: ["unsplash", "pexels"] },
-            ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
-          },
-          required: ["query", "source"]
-        }
+      name: "search_library",
+      description: "Search images from the best library source.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: { type: "string" },
+          source: { type: "string", enum: ["unsplash", "pexels"] },
+          ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
+        },
+        required: ["query"]
       }
     },
     {
       type: "function",
-      function: {
-        name: "set_view",
-        description: "Switch the presenter view between weather and gallery.",
-        parameters: {
-          type: "object",
-          properties: {
-            view: { type: "string", enum: ["weather", "gallery"] }
-          },
-          required: ["view"]
-        }
+      name: "set_view",
+      description: "Switch the presenter view between weather and gallery.",
+      parameters: {
+        type: "object",
+        properties: {
+          view: { type: "string", enum: ["weather", "gallery"] }
+        },
+        required: ["view"]
       }
     },
     {
       type: "function",
-      function: {
-        name: "refresh_weather",
-        description: "Refresh the weather data and wallpaper.",
-        parameters: {
-          type: "object",
-          properties: {}
-        }
+      name: "refresh_weather",
+      description: "Refresh the weather data and wallpaper.",
+      parameters: {
+        type: "object",
+        properties: {}
       }
     },
     {
       type: "function",
-      function: {
-        name: "generate_ai",
-        description: "Generate images with Flux.",
-        parameters: {
-          type: "object",
-          properties: {
-            prompt: { type: "string" },
-            count: { type: "integer", minimum: 1, maximum: 5 },
-            aspect_ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
-          },
-          required: ["prompt"]
-        }
+      name: "get_weather_history",
+      description: "Get historical daily weather for a city and date.",
+      parameters: {
+        type: "object",
+        properties: {
+          city: { type: "string" },
+          date: { type: "string", description: "YYYY-MM-DD" }
+        },
+        required: ["city", "date"]
       }
     },
     {
       type: "function",
-      function: {
-        name: "refine_image",
-        description: "Refine a single image with Flux Kontext.",
-        parameters: {
-          type: "object",
-          properties: {
-            prompt: { type: "string" },
-            input_image: { type: "string" }
-          },
-          required: ["prompt", "input_image"]
-        }
+      name: "generate_ai",
+      description: "Generate images with Flux.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string" },
+          count: { type: "integer", minimum: 1, maximum: 5 },
+          aspect_ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
+        },
+        required: ["prompt"]
+      }
+    },
+    {
+      type: "function",
+      name: "refine_image",
+      description: "Refine a single image with Flux Kontext.",
+      parameters: {
+        type: "object",
+        properties: {
+          prompt: { type: "string" },
+          input_image: { type: "string" }
+        },
+        required: ["prompt", "input_image"]
       }
     }
   ];
@@ -372,7 +436,11 @@ app.post("/api/agent", async (req, res) => {
     "You are VISTA Agent. You can chat normally or call a tool.",
     "Use tools only when user intent requires system action.",
     "If required parameters are missing, ask a brief question instead of calling tools.",
+    "Do not ask the user which image library to use; choose automatically (default to Unsplash).",
+    "If state includes preferred_ratio, use it when ratio/aspect_ratio is missing.",
     "Use set_view to switch between weather and gallery, and refresh_weather to update weather.",
+    "If the user asks for historical weather (e.g., yesterday, last week, or a specific date), call get_weather_history instead of refresh_weather.",
+    "After tools run, always produce a natural language reply summarizing results.",
     "Never claim you executed a tool unless you actually called it.",
     "Prefer a single tool call when possible."
   ].join(" ");
@@ -384,67 +452,111 @@ app.post("/api/agent", async (req, res) => {
   ].filter(Boolean).join("\n");
 
   try {
-    const first = await callOpenAI(
-      [
+    const first = await callOpenAIResponses({
+      input: [
         { role: "system", content: system },
         { role: "user", content: userContext }
       ],
       tools
-    );
+    });
 
-    const choice = first.choices && first.choices[0] ? first.choices[0] : null;
-    const msg = choice ? choice.message : null;
-    if (!msg) {
-      return res.status(500).json({ error: "Agent failed" });
-    }
+    const firstOutput = Array.isArray(first.output) ? first.output : [];
+    const toolCalls = firstOutput.filter((item) => item && item.type === "tool_call");
+    const replyText = typeof first.output_text === "string"
+      ? first.output_text
+      : firstOutput
+        .filter((item) => item && item.type === "output_text")
+        .map((item) => item.text || "")
+        .join("");
 
-    if (msg.tool_calls && msg.tool_calls.length) {
-      const toolResults = [];
-      const toolMessages = [];
-      for (const call of msg.tool_calls) {
-        let toolArgs = {};
-        try {
-          toolArgs = JSON.parse(call.function.arguments || "{}");
-        } catch (err) {
-          toolArgs = {};
-        }
-        const result = await executeToolCall(call);
-        toolResults.push({
-          name: call.function.name,
-          args: toolArgs,
-          result
-        });
-        toolMessages.push({
-          role: "tool",
-          tool_call_id: call.id,
-          content: JSON.stringify(result)
-        });
-      }
-
-      const second = await callOpenAI(
-        [
-          { role: "system", content: system },
-          { role: "user", content: userContext },
-          msg,
-          ...toolMessages
-        ],
-        tools
-      );
-
-      const finalMsg = second.choices && second.choices[0] ? second.choices[0].message : null;
+    if (!toolCalls.length) {
       return res.json({
-        reply: finalMsg?.content || "",
-        tool: toolResults[0]?.name || null,
-        result: toolResults[0]?.result || null,
-        tool_args: toolResults[0]?.args || null,
-        tools: toolResults
+        tools: [],
+        reply: replyText || ""
       });
     }
 
+    const toolResults = [];
+    const toolOutputs = [];
+    for (const call of toolCalls) {
+      const callId = call.id || call.call_id;
+      const toolArgsRaw = call.arguments || call.arguments_json || "{}";
+      let toolArgs = {};
+      if (typeof toolArgsRaw === "string") {
+        try {
+          toolArgs = JSON.parse(toolArgsRaw);
+        } catch (err) {
+          toolArgs = {};
+        }
+      } else if (toolArgsRaw && typeof toolArgsRaw === "object") {
+        toolArgs = toolArgsRaw;
+      }
+      const result = await executeToolCall(call);
+      const toolName = call.name || (call.function && call.function.name) || "";
+      toolResults.push({
+        name: toolName,
+        args: toolArgs,
+        result
+      });
+      if (callId) {
+        toolOutputs.push({
+          tool_call_id: callId,
+          output: JSON.stringify(result)
+        });
+      }
+    }
+
+    const second = await callOpenAIResponses({
+      input: [],
+      tools,
+      previous_response_id: first.id,
+      tool_outputs: toolOutputs
+    });
+
+    const secondOutput = Array.isArray(second.output) ? second.output : [];
+    const secondReply = typeof second.output_text === "string"
+      ? second.output_text
+      : secondOutput
+        .filter((item) => item && item.type === "output_text")
+        .map((item) => item.text || "")
+        .join("");
+
+    const fallbackReply = (() => {
+      if (!toolResults.length) return "";
+      const firstTool = toolResults[0];
+      if (firstTool.name === "get_weather_history") {
+        const r = firstTool.result || {};
+        if (r && r.city && r.date) {
+          const max = r.temperature_max != null ? `${r.temperature_max}°C` : "—";
+          const min = r.temperature_min != null ? `${r.temperature_min}°C` : "—";
+          const rain = r.precipitation_sum != null ? `${r.precipitation_sum}mm` : "—";
+          const wind = r.windspeed_max != null ? `${r.windspeed_max} m/s` : "—";
+          return `${r.city} ${r.date}: high ${max}, low ${min}, rain ${rain}, wind ${wind}.`;
+        }
+      }
+      if (firstTool.name === "refresh_weather") {
+        return "I have updated the weather data. Do you want today or the past 7 days?";
+      }
+      if (firstTool.name === "set_view") {
+        return "View updated.";
+      }
+      if (firstTool.name === "search_library") {
+        const count = Array.isArray(firstTool.result?.images) ? firstTool.result.images.length : 0;
+        return count ? `Found ${count} images.` : "Search completed.";
+      }
+      if (firstTool.name === "generate_ai") {
+        const count = Array.isArray(firstTool.result?.images) ? firstTool.result.images.length : 0;
+        return count ? `Generated ${count} images.` : "Generation completed.";
+      }
+      if (firstTool.name === "refine_image") {
+        return "Refine completed.";
+      }
+      return "Done.";
+    })();
+
     return res.json({
-      reply: msg.content || "",
-      tool: null,
-      result: null
+      tools: toolResults,
+      reply: secondReply || replyText || fallbackReply || ""
     });
   } catch (err) {
     console.error("Agent Error:", err);
