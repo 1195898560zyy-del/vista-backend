@@ -6,6 +6,7 @@
 const express = require("express");
 const cors = require("cors");
 const fetch = require("node-fetch");
+const FormData = require("form-data");
 const dotenv = require("dotenv");
 const path = require("path");
 
@@ -13,7 +14,7 @@ dotenv.config({ path: __dirname + "/.env" });
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "20mb" }));
 app.use(express.static(path.join(__dirname, "..", "vistapj")));
 
 const sessions = new Map();
@@ -118,6 +119,44 @@ app.get("/api/status", (req, res) => {
   if (!cmd) return res.status(404).json({ error: "Command not found" });
 
   res.json({ status: cmd.status });
+});
+
+// =======================================================
+// SPEECH-TO-TEXT (OPENAI WHISPER)
+// =======================================================
+app.post("/api/transcribe", async (req, res) => {
+  const { audio, mime } = req.body || {};
+  if (!audio) return res.status(400).json({ error: "Missing audio" });
+
+  const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY;
+  if (!apiKey) return res.status(500).json({ error: "Missing OPENAI_API_KEY" });
+
+  try {
+    const buffer = Buffer.from(audio, "base64");
+    const form = new FormData();
+    form.append("model", "whisper-1");
+    form.append("file", buffer, {
+      filename: "speech.webm",
+      contentType: mime || "audio/webm"
+    });
+
+    const r = await fetch("https://api.openai.com/v1/audio/transcriptions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`
+      },
+      body: form
+    });
+
+    const data = await r.json();
+    if (!r.ok) {
+      return res.status(500).json({ error: data.error?.message || "Transcription failed" });
+    }
+    res.json({ text: data.text || "" });
+  } catch (err) {
+    console.error("Transcribe Error:", err);
+    res.status(500).json({ error: "Transcription failed" });
+  }
 });
 
 // =======================================================
