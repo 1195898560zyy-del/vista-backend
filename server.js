@@ -274,6 +274,16 @@ async function executeToolCall(toolCall) {
     return { image: data.image || "" };
   }
 
+  if (name === "set_view") {
+    const { view } = args;
+    if (!view) throw new Error("Missing view");
+    return { view };
+  }
+
+  if (name === "refresh_weather") {
+    return { ok: true };
+  }
+
   throw new Error("Unknown tool");
 }
 
@@ -297,6 +307,31 @@ app.post("/api/agent", async (req, res) => {
             ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
           },
           required: ["query", "source"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "set_view",
+        description: "Switch the presenter view between weather and gallery.",
+        parameters: {
+          type: "object",
+          properties: {
+            view: { type: "string", enum: ["weather", "gallery"] }
+          },
+          required: ["view"]
+        }
+      }
+    },
+    {
+      type: "function",
+      function: {
+        name: "refresh_weather",
+        description: "Refresh the weather data and wallpaper.",
+        parameters: {
+          type: "object",
+          properties: {}
         }
       }
     },
@@ -337,7 +372,9 @@ app.post("/api/agent", async (req, res) => {
     "You are VISTA Agent. You can chat normally or call a tool.",
     "Use tools only when user intent requires system action.",
     "If required parameters are missing, ask a brief question instead of calling tools.",
-    "Never claim you executed a tool unless you actually called it."
+    "Use set_view to switch between weather and gallery, and refresh_weather to update weather.",
+    "Never claim you executed a tool unless you actually called it.",
+    "Prefer a single tool call when possible."
   ].join(" ");
 
   const userContext = [
@@ -362,19 +399,34 @@ app.post("/api/agent", async (req, res) => {
     }
 
     if (msg.tool_calls && msg.tool_calls.length) {
-      const toolCall = msg.tool_calls[0];
-      const toolArgs = JSON.parse(toolCall.function.arguments || "{}");
-      const result = await executeToolCall(toolCall);
+      const toolResults = [];
+      const toolMessages = [];
+      for (const call of msg.tool_calls) {
+        let toolArgs = {};
+        try {
+          toolArgs = JSON.parse(call.function.arguments || "{}");
+        } catch (err) {
+          toolArgs = {};
+        }
+        const result = await executeToolCall(call);
+        toolResults.push({
+          name: call.function.name,
+          args: toolArgs,
+          result
+        });
+        toolMessages.push({
+          role: "tool",
+          tool_call_id: call.id,
+          content: JSON.stringify(result)
+        });
+      }
+
       const second = await callOpenAI(
         [
           { role: "system", content: system },
           { role: "user", content: userContext },
           msg,
-          {
-            role: "tool",
-            tool_call_id: toolCall.id,
-            content: JSON.stringify(result)
-          }
+          ...toolMessages
         ],
         tools
       );
@@ -382,9 +434,10 @@ app.post("/api/agent", async (req, res) => {
       const finalMsg = second.choices && second.choices[0] ? second.choices[0].message : null;
       return res.json({
         reply: finalMsg?.content || "",
-        tool: toolCall.function.name,
-        result,
-        tool_args: toolArgs
+        tool: toolResults[0]?.name || null,
+        result: toolResults[0]?.result || null,
+        tool_args: toolResults[0]?.args || null,
+        tools: toolResults
       });
     }
 
