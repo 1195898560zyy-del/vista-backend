@@ -162,25 +162,10 @@ app.post("/api/transcribe", async (req, res) => {
 // =======================================================
 // AGENT ROUTER + EXECUTOR (SEARCH/GENERATE/REFINE)
 // =======================================================
-async function callOpenAIResponses({ input, tools, previous_response_id, tool_outputs }) {
+async function callOpenAIResponses({ input, tools, previous_response_id }) {
   const apiKey = process.env.OPENAI_API_KEY || process.env.OPENAI_KEY;
   if (!apiKey) {
     throw new Error("Missing OPENAI_API_KEY");
-  }
-
-  const normalizedInput = [];
-  if (Array.isArray(tool_outputs) && tool_outputs.length) {
-    tool_outputs.forEach((toolOutput) => {
-      if (!toolOutput || !toolOutput.tool_call_id) return;
-      normalizedInput.push({
-        type: "tool_output",
-        tool_call_id: toolOutput.tool_call_id,
-        output: toolOutput.output
-      });
-    });
-  }
-  if (Array.isArray(input) && input.length) {
-    normalizedInput.push(...input);
   }
 
   const model = process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini";
@@ -192,7 +177,7 @@ async function callOpenAIResponses({ input, tools, previous_response_id, tool_ou
     },
     body: JSON.stringify({
       model,
-      input: normalizedInput,
+      input: Array.isArray(input) ? input : [],
       tools,
       tool_choice: "auto",
       temperature: 0.6,
@@ -694,11 +679,20 @@ app.post("/api/agent", async (req, res) => {
       }
     }
 
+    const followupInput = toolOutputs.map((toolOutput) => ({
+      type: "tool_output",
+      tool_call_id: toolOutput.tool_call_id,
+      output: toolOutput.output
+    }));
+    followupInput.push({
+      role: "user",
+      content: "Summarize the tool results in a helpful reply."
+    });
+
     const second = await callOpenAIResponses({
-      input: [{ role: "user", content: "Summarize the tool results in a helpful reply." }],
+      input: followupInput,
       tools,
-      previous_response_id: first.id,
-      tool_outputs: toolOutputs
+      previous_response_id: first.id
     });
 
     const secondReply = extractOutputText(second);
