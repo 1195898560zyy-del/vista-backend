@@ -193,6 +193,48 @@ async function callOpenAIResponses({ input, tools, previous_response_id, tool_ou
   return data;
 }
 
+function extractOutputText(response) {
+  if (!response) return "";
+  if (typeof response.output_text === "string" && response.output_text.trim()) {
+    return response.output_text;
+  }
+  const output = Array.isArray(response.output) ? response.output : [];
+  let text = "";
+  output.forEach((item) => {
+    if (!item) return;
+    if (item.type === "output_text" && item.text) {
+      text += item.text;
+    }
+    if (item.type === "message" && Array.isArray(item.content)) {
+      item.content.forEach((part) => {
+        if (part && part.type === "output_text" && part.text) {
+          text += part.text;
+        }
+      });
+    }
+  });
+  return text;
+}
+
+function extractToolCalls(response) {
+  const output = Array.isArray(response && response.output) ? response.output : [];
+  const calls = [];
+  output.forEach((item) => {
+    if (!item) return;
+    if (item.type === "tool_call") {
+      calls.push(item);
+    }
+    if (item.type === "message" && Array.isArray(item.content)) {
+      item.content.forEach((part) => {
+        if (part && part.type === "tool_call") {
+          calls.push(part);
+        }
+      });
+    }
+  });
+  return calls;
+}
+
 async function executeToolCall(toolCall) {
   const name = (toolCall.function && toolCall.function.name) || toolCall.name;
   const rawArgs =
@@ -460,14 +502,8 @@ app.post("/api/agent", async (req, res) => {
       tools
     });
 
-    const firstOutput = Array.isArray(first.output) ? first.output : [];
-    const toolCalls = firstOutput.filter((item) => item && item.type === "tool_call");
-    const replyText = typeof first.output_text === "string"
-      ? first.output_text
-      : firstOutput
-        .filter((item) => item && item.type === "output_text")
-        .map((item) => item.text || "")
-        .join("");
+    const toolCalls = extractToolCalls(first);
+    const replyText = extractOutputText(first);
 
     if (!toolCalls.length) {
       return res.json({
@@ -513,13 +549,7 @@ app.post("/api/agent", async (req, res) => {
       tool_outputs: toolOutputs
     });
 
-    const secondOutput = Array.isArray(second.output) ? second.output : [];
-    const secondReply = typeof second.output_text === "string"
-      ? second.output_text
-      : secondOutput
-        .filter((item) => item && item.type === "output_text")
-        .map((item) => item.text || "")
-        .join("");
+    const secondReply = extractOutputText(second);
 
     const fallbackReply = (() => {
       if (!toolResults.length) return "";
