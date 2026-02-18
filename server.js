@@ -237,6 +237,91 @@ function extractToolCalls(response) {
   return calls;
 }
 
+function parseISODate(text) {
+  const match = text.match(/\b(\d{4}-\d{2}-\d{2})\b/);
+  return match ? match[1] : "";
+}
+
+function formatDateOffset(days) {
+  const d = new Date();
+  d.setDate(d.getDate() + days);
+  const yyyy = d.getFullYear();
+  const mm = String(d.getMonth() + 1).padStart(2, "0");
+  const dd = String(d.getDate()).padStart(2, "0");
+  return `${yyyy}-${mm}-${dd}`;
+}
+
+function extractCity(text) {
+  const inMatch = text.match(/\bin\s+([a-z\s]+)$/i);
+  if (inMatch && inMatch[1]) return inMatch[1].trim();
+  const weatherMatch = text.match(/([a-z\s]+)\s+weather/i);
+  if (weatherMatch && weatherMatch[1]) return weatherMatch[1].trim();
+  const zhMatch = text.match(/([\u4e00-\u9fa5A-Za-z\s]+)天气/);
+  if (zhMatch && zhMatch[1]) return zhMatch[1].trim();
+  return "";
+}
+
+function inferToolFromText(message, state) {
+  const text = String(message || "").toLowerCase().trim();
+  if (!text) return null;
+
+  const wantsHistory = /yesterday|last week|last 7 days|过去|昨天|前天|上周/.test(text);
+  if (wantsHistory) {
+    const city = extractCity(text);
+    const date =
+      parseISODate(text) ||
+      (text.includes("yesterday") || text.includes("昨天") ? formatDateOffset(-1) : "") ||
+      (text.includes("前天") ? formatDateOffset(-2) : "") ||
+      (text.includes("last week") || text.includes("上周") ? formatDateOffset(-7) : "");
+    if (!city) {
+      return { reply: "Which city?" };
+    }
+    if (!date) {
+      return { reply: "Which date should I check?" };
+    }
+    return {
+      tools: [
+        { name: "get_weather_history", args: { city, date } }
+      ]
+    };
+  }
+
+  const wantsSearch = /show me|search|find|image|picture|photo|搜|搜索|找|图|图片|照片/.test(text);
+  if (wantsSearch && !/weather|天气/.test(text)) {
+    let query = text
+      .replace(/show me|search|find|images of|image of|pictures of|picture of|photos of|photo of/gi, "")
+      .replace(/搜|搜索|找|图片|照片|图/g, "")
+      .trim();
+    if (!query) {
+      return { reply: "What should I search for?" };
+    }
+    const ratio = state?.preferred_ratio || state?.ratio || "1:1";
+    return {
+      tools: [
+        { name: "search_library", args: { query, ratio } }
+      ]
+    };
+  }
+
+  const wantsGenerate = /generate|create|make|draw|生成|画|创作/.test(text);
+  if (wantsGenerate) {
+    let prompt = text
+      .replace(/generate|create|make|draw|生成|画|创作/gi, "")
+      .trim();
+    if (!prompt) {
+      return { reply: "What should I generate?" };
+    }
+    const ratio = state?.preferred_ratio || state?.ai_ratio || "1:1";
+    return {
+      tools: [
+        { name: "generate_ai", args: { prompt, aspect_ratio: ratio } }
+      ]
+    };
+  }
+
+  return null;
+}
+
 async function executeToolCall(toolCall) {
   const name =
     toolCall.name ||
@@ -511,6 +596,54 @@ app.post("/api/agent", async (req, res) => {
     const replyText = extractOutputText(first);
 
     if (!toolCalls.length) {
+      const inferred = inferToolFromText(message, state || {});
+      if (inferred && inferred.reply) {
+        return res.json({
+          tools: [],
+          reply: inferred.reply
+        });
+      }
+      if (inferred && Array.isArray(inferred.tools) && inferred.tools.length) {
+        const toolResults = [];
+        for (const tool of inferred.tools) {
+          const result = await executeToolCall({
+            name: tool.name,
+            arguments: JSON.stringify(tool.args || {})
+          });
+          toolResults.push({
+            name: tool.name,
+            args: tool.args || {},
+            result
+          });
+        }
+        const fallbackReply = (() => {
+          const firstTool = toolResults[0];
+          if (!firstTool) return "";
+          if (firstTool.name === "get_weather_history") {
+            const r = firstTool.result || {};
+            if (r && r.city && r.date) {
+              const max = r.temperature_max != null ? `${r.temperature_max}°C` : "—";
+              const min = r.temperature_min != null ? `${r.temperature_min}°C` : "—";
+              const rain = r.precipitation_sum != null ? `${r.precipitation_sum}mm` : "—";
+              const wind = r.windspeed_max != null ? `${r.windspeed_max} m/s` : "—";
+              return `${r.city} ${r.date}: high ${max}, low ${min}, rain ${rain}, wind ${wind}.`;
+            }
+          }
+          if (firstTool.name === "search_library") {
+            const count = Array.isArray(firstTool.result?.images) ? firstTool.result.images.length : 0;
+            return count ? `Found ${count} images.` : "Search completed.";
+          }
+          if (firstTool.name === "generate_ai") {
+            const count = Array.isArray(firstTool.result?.images) ? firstTool.result.images.length : 0;
+            return count ? `Generated ${count} images.` : "Generation completed.";
+          }
+          return "Done.";
+        })();
+        return res.json({
+          tools: toolResults,
+          reply: fallbackReply || "Done."
+        });
+      }
       return res.json({
         tools: [],
         reply: replyText || "Got it. What would you like to do next?"
