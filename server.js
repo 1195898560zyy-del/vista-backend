@@ -472,7 +472,7 @@ app.post("/api/agent", async (req, res) => {
     if (!toolCalls.length) {
       return res.json({
         tools: [],
-        reply: replyText || ""
+        reply: replyText || "Got it. What would you like to do next?"
       });
     }
 
@@ -556,7 +556,7 @@ app.post("/api/agent", async (req, res) => {
 
     return res.json({
       tools: toolResults,
-      reply: secondReply || replyText || fallbackReply || ""
+      reply: secondReply || replyText || fallbackReply || "Got it. What would you like to do next?"
     });
   } catch (err) {
     console.error("Agent Error:", err);
