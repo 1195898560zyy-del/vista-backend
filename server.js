@@ -168,6 +168,21 @@ async function callOpenAIResponses({ input, tools, previous_response_id, tool_ou
     throw new Error("Missing OPENAI_API_KEY");
   }
 
+  const normalizedInput = [];
+  if (Array.isArray(tool_outputs) && tool_outputs.length) {
+    tool_outputs.forEach((toolOutput) => {
+      if (!toolOutput || !toolOutput.tool_call_id) return;
+      normalizedInput.push({
+        type: "tool_output",
+        tool_call_id: toolOutput.tool_call_id,
+        output: toolOutput.output
+      });
+    });
+  }
+  if (Array.isArray(input) && input.length) {
+    normalizedInput.push(...input);
+  }
+
   const model = process.env.OPENAI_CHAT_MODEL || "gpt-4o-mini";
   const r = await fetch("https://api.openai.com/v1/responses", {
     method: "POST",
@@ -177,12 +192,11 @@ async function callOpenAIResponses({ input, tools, previous_response_id, tool_ou
     },
     body: JSON.stringify({
       model,
-      input,
+      input: normalizedInput,
       tools,
       tool_choice: "auto",
       temperature: 0.6,
-      previous_response_id,
-      tool_outputs
+      previous_response_id
     })
   });
 
