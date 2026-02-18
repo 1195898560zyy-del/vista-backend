@@ -207,7 +207,8 @@ function extractOutputText(response) {
     }
     if (item.type === "message" && Array.isArray(item.content)) {
       item.content.forEach((part) => {
-        if (part && part.type === "output_text" && part.text) {
+        if (!part) return;
+        if ((part.type === "text" || part.type === "output_text") && part.text) {
           text += part.text;
         }
       });
@@ -221,12 +222,13 @@ function extractToolCalls(response) {
   const calls = [];
   output.forEach((item) => {
     if (!item) return;
-    if (item.type === "tool_call") {
+    if (item.type === "tool_call" || item.type === "function_call") {
       calls.push(item);
     }
     if (item.type === "message" && Array.isArray(item.content)) {
       item.content.forEach((part) => {
-        if (part && part.type === "tool_call") {
+        if (!part) return;
+        if (part.type === "tool_call" || part.type === "function_call") {
           calls.push(part);
         }
       });
@@ -236,10 +238,13 @@ function extractToolCalls(response) {
 }
 
 async function executeToolCall(toolCall) {
-  const name = (toolCall.function && toolCall.function.name) || toolCall.name;
+  const name =
+    toolCall.name ||
+    (toolCall.function && toolCall.function.name) ||
+    toolCall.tool_name;
   const rawArgs =
-    (toolCall.function && toolCall.function.arguments) ||
     toolCall.arguments ||
+    (toolCall.function && toolCall.function.arguments) ||
     toolCall.arguments_json ||
     "{}";
   let args = {};
@@ -543,7 +548,7 @@ app.post("/api/agent", async (req, res) => {
     }
 
     const second = await callOpenAIResponses({
-      input: [],
+      input: [{ role: "user", content: "Summarize the tool results in a helpful reply." }],
       tools,
       previous_response_id: first.id,
       tool_outputs: toolOutputs
