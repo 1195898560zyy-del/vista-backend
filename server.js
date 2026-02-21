@@ -269,6 +269,18 @@ function inferToolFromText(message, state) {
     return { reply: "Hi! What would you like to do—search images, generate, or check weather?" };
   }
 
+  const wantsRefine = /refine|edit|retouch|adjust|add|remove|replace|dof|depth of field|blur|bokeh|修|改|调整|虚化|景深|添加|去掉|替换/.test(text);
+  if (wantsRefine) {
+    if (state && state.current_image) {
+      return {
+        tools: [
+          { name: "refine_image", args: { prompt: message, input_image: state.current_image } }
+        ]
+      };
+    }
+    return { reply: "Please open an image in the gallery first so I can refine it." };
+  }
+
   const wantsHistory = /yesterday|last week|last 7 days|过去|昨天|前天|上周/.test(text);
   if (wantsHistory) {
     const city = extractCity(text);
