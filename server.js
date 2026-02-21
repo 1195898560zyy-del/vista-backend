@@ -264,6 +264,11 @@ function inferToolFromText(message, state) {
   const text = String(message || "").toLowerCase().trim();
   if (!text) return null;
 
+  const isGreeting = /^(hi|hello|hey|yo|你好|嗨|早上好|下午好|晚上好|早)$/i.test(text);
+  if (isGreeting) {
+    return { reply: "Hi! What would you like to do—search images, generate, or check weather?" };
+  }
+
   const wantsHistory = /yesterday|last week|last 7 days|过去|昨天|前天|上周/.test(text);
   if (wantsHistory) {
     const city = extractCity(text);
@@ -316,6 +321,18 @@ function inferToolFromText(message, state) {
         { name: "generate_ai", args: { prompt, aspect_ratio: ratio } }
       ]
     };
+  }
+
+  if (!/weather|天气/.test(text)) {
+    const tokens = text.split(/\s+/).filter(Boolean);
+    if (tokens.length <= 3 && text.length <= 30) {
+      const ratio = state?.preferred_ratio || state?.ratio || "1:1";
+      return {
+        tools: [
+          { name: "search_library", args: { query: text, ratio } }
+        ]
+      };
+    }
   }
 
   return null;
@@ -679,22 +696,27 @@ app.post("/api/agent", async (req, res) => {
       }
     }
 
-    const followupInput = toolOutputs.map((toolOutput) => ({
-      type: "function_call_output",
-      call_id: toolOutput.tool_call_id,
-      output: toolOutput.output
-    }));
-    followupInput.push({
-      role: "user",
-      content: "Summarize the tool results in a helpful reply."
-    });
+    let secondReply = "";
+    try {
+      const followupInput = toolOutputs.map((toolOutput) => ({
+        type: "function_call_output",
+        call_id: toolOutput.tool_call_id,
+        output: toolOutput.output
+      }));
+      followupInput.push({
+        role: "user",
+        content: "Summarize the tool results in a helpful reply."
+      });
 
-    const second = await callOpenAIResponses({
-      input: followupInput,
-      tools
-    });
-
-    const secondReply = extractOutputText(second);
+      const second = await callOpenAIResponses({
+        input: followupInput,
+        tools,
+        previous_response_id: first.id
+      });
+      secondReply = extractOutputText(second);
+    } catch (err) {
+      console.error("Agent follow-up error:", err);
+    }
 
     const fallbackReply = (() => {
       if (!toolResults.length) return "";
