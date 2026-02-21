@@ -691,8 +691,7 @@ app.post("/api/agent", async (req, res) => {
 
     const second = await callOpenAIResponses({
       input: followupInput,
-      tools,
-      previous_response_id: first.id
+      tools
     });
 
     const secondReply = extractOutputText(second);
