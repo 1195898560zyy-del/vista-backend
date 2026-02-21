@@ -681,8 +681,15 @@ app.post("/api/agent", async (req, res) => {
       } else if (toolArgsRaw && typeof toolArgsRaw === "object") {
         toolArgs = toolArgsRaw;
       }
-      const result = await executeToolCall(call);
       const toolName = call.name || (call.function && call.function.name) || "";
+      if (toolName === "refine_image") {
+        const needsImage = !toolArgs.input_image || /^(current|current image|current one)$/i.test(String(toolArgs.input_image || "").trim());
+        if (needsImage && state && state.current_image) {
+          toolArgs.input_image = state.current_image;
+          call.arguments = JSON.stringify(toolArgs);
+        }
+      }
+      const result = await executeToolCall(call);
       toolResults.push({
         name: toolName,
         args: toolArgs,
