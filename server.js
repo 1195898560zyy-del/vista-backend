@@ -680,8 +680,8 @@ app.post("/api/agent", async (req, res) => {
     }
 
     const followupInput = toolOutputs.map((toolOutput) => ({
-      type: "tool_output",
-      tool_call_id: toolOutput.tool_call_id,
+      type: "function_call_output",
+      call_id: toolOutput.tool_call_id,
       output: toolOutput.output
     }));
     followupInput.push({
