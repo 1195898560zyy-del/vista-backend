@@ -379,32 +379,72 @@ async function executeToolCall(toolCall) {
       throw new Error("Missing query");
     }
     const selectedSource =
-      source === "pexels" || source === "unsplash" ? source : "unsplash";
-    if (selectedSource === "unsplash") {
+      source === "pexels" || source === "unsplash" || source === "pixabay" || source === "multi"
+        ? source
+        : "multi";
+    const ratioValue = ratio || "1:1";
+    const fetchUnsplash = async () => {
       const r = await fetch(
         `${baseUrl}/api/unsplash` +
           `?q=${encodeURIComponent(query)}` +
           `&random=1` +
-          `&ratio=${encodeURIComponent(ratio || "1:1")}`
+          `&ratio=${encodeURIComponent(ratioValue)}`
       );
       const data = await r.json();
       if (!r.ok || data.error) {
         throw new Error(data.error || "Unsplash failed");
       }
-      return { images: data.images || [], source: selectedSource };
-    }
-    if (selectedSource === "pexels") {
+      return data.images || [];
+    };
+    const fetchPexels = async () => {
       const r = await fetch(
         `${baseUrl}/api/pexels` +
           `?q=${encodeURIComponent(query)}` +
           `&random=1` +
-          `&ratio=${encodeURIComponent(ratio || "1:1")}`
+          `&ratio=${encodeURIComponent(ratioValue)}`
       );
       const data = await r.json();
       if (!r.ok || data.error) {
         throw new Error(data.error || "Pexels failed");
       }
-      return { images: data.images || [], source: selectedSource };
+      return data.images || [];
+    };
+    const fetchPixabay = async () => {
+      const r = await fetch(
+        `${baseUrl}/api/pixabay` +
+          `?q=${encodeURIComponent(query)}` +
+          `&random=1` +
+          `&ratio=${encodeURIComponent(ratioValue)}`
+      );
+      const data = await r.json();
+      if (!r.ok || data.error) {
+        throw new Error(data.error || "Pixabay failed");
+      }
+      return data.images || [];
+    };
+    if (selectedSource === "multi") {
+      const [uImages, pImages, xImages] = await Promise.allSettled([
+        fetchUnsplash(),
+        fetchPexels(),
+        fetchPixabay()
+      ]);
+      const images = []
+        .concat(uImages.status === "fulfilled" ? uImages.value : [])
+        .concat(pImages.status === "fulfilled" ? pImages.value : [])
+        .concat(xImages.status === "fulfilled" ? xImages.value : []);
+      return { images, source: "multi" };
+    }
+    if (selectedSource === "unsplash") {
+      const images = await fetchUnsplash();
+      return { images, source: selectedSource };
+    }
+    if (selectedSource === "pexels") {
+      const images = await fetchPexels();
+      return { images, source: selectedSource };
+    }
+    if (selectedSource === "pixabay") {
+      const images = await fetchPixabay();
+      return { images, source: selectedSource };
     }
     throw new Error("Unsupported source");
   }
@@ -523,7 +563,7 @@ app.post("/api/agent", async (req, res) => {
         type: "object",
         properties: {
           query: { type: "string" },
-          source: { type: "string", enum: ["unsplash", "pexels"] },
+          source: { type: "string", enum: ["multi", "unsplash", "pexels", "pixabay"] },
           ratio: { type: "string", enum: ["1:1", "4:3", "16:9", "3:4", "9:16"] }
         },
         required: ["query"]
@@ -901,9 +941,57 @@ app.get("/api/pexels", async (req, res) => {
   }
 });
 
+// =======================================================
+// 3) PIXABAY — SIMPLE SEARCH
+// =======================================================
+app.get("/api/pixabay", async (req, res) => {
+  const q = req.query.q;
+  if (!q) return res.status(400).json({ error: "Missing ?q=" });
+  const random = req.query.random === "1" || req.query.random === "true";
+  const page = Number(req.query.page || 1);
+  const pickPage = random ? Math.floor(Math.random() * 50) + 1 : page;
+  const ratio = req.query.ratio || "";
+  const orientation = ratio.startsWith("1:1")
+    ? ""
+    : (ratio === "4:3" || ratio === "16:9")
+      ? "horizontal"
+      : (ratio === "3:4" || ratio === "9:16")
+        ? "vertical"
+        : "";
+
+  if (!process.env.PIXABAY_KEY) {
+    return res.status(500).json({ error: "Missing PIXABAY_KEY" });
+  }
+
+  try {
+    const orientationParam = orientation ? `&orientation=${orientation}` : "";
+    const url =
+      `https://pixabay.com/api/?key=${encodeURIComponent(process.env.PIXABAY_KEY)}` +
+      `&q=${encodeURIComponent(q)}` +
+      `&image_type=photo` +
+      `&per_page=30` +
+      `&page=${pickPage}` +
+      `${orientationParam}`;
+    const r = await fetch(url);
+    const data = await r.json();
+    if (!r.ok || data.error) {
+      return res.status(500).json({ error: data.error || "Pixabay request failed" });
+    }
+    const images = Array.isArray(data.hits)
+      ? data.hits.map((hit) => hit.largeImageURL || hit.webformatURL).filter(Boolean)
+      : [];
+    const totalHits = Number(data.totalHits || 0);
+    const totalPages = totalHits ? Math.ceil(totalHits / 30) : 1;
+    res.json({ images, totalPages });
+  } catch (err) {
+    console.error("Pixabay Error:", err);
+    res.status(500).json({ error: "Pixabay proxy failed" });
+  }
+});
+
 
 // =======================================================
-// 3) WEATHER — OPENWEATHER PROXY
+// 4) WEATHER — OPENWEATHER PROXY
 // =======================================================
 app.get("/api/weather", async (req, res) => {
   const lat = Number(req.query.lat);
