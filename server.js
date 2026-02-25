@@ -135,6 +135,7 @@ app.post("/api/transcribe", async (req, res) => {
     const buffer = Buffer.from(audio, "base64");
     const form = new FormData();
     form.append("model", "whisper-1");
+    form.append("language", "en");
     form.append("file", buffer, {
       filename: "speech.webm",
       contentType: mime || "audio/webm"
