@@ -19,6 +19,9 @@ app.use(express.static(path.join(__dirname, "..", "vistapj")));
 
 const sessions = new Map();
 
+const asyncHandler = (fn) => (req, res, next) =>
+  Promise.resolve(fn(req, res, next)).catch(next);
+
 function createSessionId() {
   return (
     Date.now().toString(36) +
@@ -124,7 +127,7 @@ app.get("/api/status", (req, res) => {
 // =======================================================
 // SPEECH-TO-TEXT (OPENAI WHISPER)
 // =======================================================
-app.post("/api/transcribe", async (req, res) => {
+app.post("/api/transcribe", asyncHandler(async (req, res) => {
   const { audio, mime } = req.body || {};
   if (!audio) return res.status(400).json({ error: "Missing audio" });
 
@@ -158,7 +161,7 @@ app.post("/api/transcribe", async (req, res) => {
     console.error("Transcribe Error:", err);
     res.status(500).json({ error: "Transcription failed" });
   }
-});
+}));
 
 // =======================================================
 // AGENT ROUTER + EXECUTOR (SEARCH/GENERATE/REFINE)
@@ -549,7 +552,7 @@ async function executeToolCall(toolCall) {
   throw new Error("Unknown tool");
 }
 
-app.post("/api/agent", async (req, res) => {
+app.post("/api/agent", asyncHandler(async (req, res) => {
   const { message, summary, state } = req.body || {};
   if (!message) {
     return res.status(400).json({ error: "Missing message" });
@@ -819,12 +822,12 @@ app.post("/api/agent", async (req, res) => {
     console.error("Agent Error:", err);
     res.status(500).json({ error: err.message || "Agent failed" });
   }
-});
+}));
 
 // =======================================================
 // 1) UNSPLASH — PAGINATION SUPPORT
 // =======================================================
-app.get("/api/unsplash", async (req, res) => {
+app.get("/api/unsplash", asyncHandler(async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: "Missing ?q=" });
 
@@ -881,13 +884,13 @@ app.get("/api/unsplash", async (req, res) => {
     console.error("Unsplash Error:", err);
     res.status(500).json({ error: "Unsplash proxy failed" });
   }
-});
+}));
 
 
 // =======================================================
 // 2) PEXELS — SIMPLE SEARCH
 // =======================================================
-app.get("/api/pexels", async (req, res) => {
+app.get("/api/pexels", asyncHandler(async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: "Missing ?q=" });
   const random = req.query.random === "1" || req.query.random === "true";
@@ -940,12 +943,12 @@ app.get("/api/pexels", async (req, res) => {
     console.error("Pexels Error:", err);
     res.status(500).json({ error: "Pexels proxy failed" });
   }
-});
+}));
 
 // =======================================================
 // 3) PIXABAY — SIMPLE SEARCH
 // =======================================================
-app.get("/api/pixabay", async (req, res) => {
+app.get("/api/pixabay", asyncHandler(async (req, res) => {
   const q = req.query.q;
   if (!q) return res.status(400).json({ error: "Missing ?q=" });
   const random = req.query.random === "1" || req.query.random === "true";
@@ -988,13 +991,13 @@ app.get("/api/pixabay", async (req, res) => {
     console.error("Pixabay Error:", err);
     res.status(500).json({ error: "Pixabay proxy failed" });
   }
-});
+}));
 
 
 // =======================================================
 // 4) WEATHER — OPENWEATHER PROXY
 // =======================================================
-app.get("/api/weather", async (req, res) => {
+app.get("/api/weather", asyncHandler(async (req, res) => {
   const lat = Number(req.query.lat);
   const lon = Number(req.query.lon);
 
@@ -1037,13 +1040,13 @@ app.get("/api/weather", async (req, res) => {
     console.error("Weather Error:", err);
     res.status(500).json({ error: "Weather proxy failed" });
   }
-});
+}));
 
 
 // =======================================================
 // 4) OPENAI — SINGLE IMAGE GENERATION
 // =======================================================
-app.post("/api/generate", async (req, res) => {
+app.post("/api/generate", asyncHandler(async (req, res) => {
   try {
     const { prompt, size, model } = req.body;
     if (!prompt) return res.status(400).json({ error: "Missing prompt" });
@@ -1072,14 +1075,14 @@ app.post("/api/generate", async (req, res) => {
     console.error("OpenAI Error:", err);
     res.status(500).json({ error: "OpenAI proxy failed" });
   }
-});
+}));
 
 
 // =======================================================
 // 5) OPENAI — BATCH (MULTI-STYLE) GENERATION
 // =======================================================
 // prompts: ["dog, cinematic", "dog, watercolor", ...]
-app.post("/api/generate_batch", async (req, res) => {
+app.post("/api/generate_batch", asyncHandler(async (req, res) => {
   try {
     const { prompts, size = "1024x1024", model = "gpt-image-1" } = req.body;
 
@@ -1122,12 +1125,53 @@ app.post("/api/generate_batch", async (req, res) => {
     console.error("Batch Error:", err);
     res.status(500).json({ error: "Batch generation failed" });
   }
-});
+}));
+
+// =======================================================
+// 5.5) OPENAI — IMAGE GENERATION (URL RESPONSE)
+// =======================================================
+app.post("/api/openai_image", asyncHandler(async (req, res) => {
+  try {
+    const { prompt, size, model, count } = req.body || {};
+    if (!prompt) return res.status(400).json({ error: "Missing prompt" });
+    if (!process.env.OPENAI_KEY) {
+      return res.status(500).json({ error: "Missing OPENAI_KEY" });
+    }
+
+    const response = await fetch("https://api.openai.com/v1/images/generations", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${process.env.OPENAI_KEY}`
+      },
+      body: JSON.stringify({
+        prompt,
+        n: count || 1,
+        size: size || "1024x1024",
+        model: model || "gpt-image-1",
+        response_format: "url"
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) {
+      return res.status(500).json({ error: data.error?.message || "OpenAI image failed" });
+    }
+
+    const images = Array.isArray(data.data)
+      ? data.data.map((item) => item.url).filter(Boolean)
+      : [];
+    res.json({ images });
+  } catch (err) {
+    console.error("OpenAI Image Error:", err);
+    res.status(500).json({ error: "OpenAI image proxy failed" });
+  }
+}));
 
 // =======================================================
 // 6) REPLICATE — Imagen-4
 // =======================================================
-app.post("/api/replicate", async (req, res) => {
+app.post("/api/replicate", asyncHandler(async (req, res) => {
   const { prompt, aspect_ratio, count } = req.body;
 
   if (!prompt) {
@@ -1195,12 +1239,12 @@ app.post("/api/replicate", async (req, res) => {
     console.error("Replicate Error:", err);
     res.status(500).json({ error: "Replicate request failed" });
   }
-});
+}));
 
 // =======================================================
 // 7) REPLICATE — Flux Kontext Pro (image refine)
 // =======================================================
-app.post("/api/refine", async (req, res) => {
+app.post("/api/refine", asyncHandler(async (req, res) => {
   const { prompt, input_image } = req.body;
 
   if (!prompt || !input_image) {
@@ -1268,6 +1312,16 @@ app.post("/api/refine", async (req, res) => {
     console.error("Refine Error:", err);
     res.status(500).json({ error: "Refine request failed" });
   }
+}));
+
+// =======================================================
+// Unified API error handler
+// =======================================================
+app.use((err, req, res, next) => {
+  console.error("API Error:", err);
+  if (res.headersSent) return next(err);
+  const status = err.status || err.statusCode || 500;
+  res.status(status).json({ error: err.message || "Server error" });
 });
 
 // =======================================================
