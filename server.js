@@ -323,7 +323,8 @@ function inferToolFromText(message, state) {
     };
   }
 
-  const wantsGenerate = /generate|create|make|draw|生成|画|创作/.test(text);
+  const wantsGenerate = /generate|create|make|draw|生成|画|创作/.test(text) &&
+    !/search|find|show me|搜|搜索|找|图|图片|照片/.test(text);
   if (wantsGenerate) {
     let prompt = text
       .replace(/generate|create|make|draw|生成|画|创作/gi, "")
@@ -456,6 +457,21 @@ async function executeToolCall(toolCall) {
   if (name === "generate_ai") {
     const { prompt, count, aspect_ratio } = args;
     if (!prompt) throw new Error("Missing prompt");
+    const promptText = String(prompt || "").toLowerCase();
+    const looksLikeSearch =
+      /(^|\b)(search|find|show me|images of|image of|photos of|photo of)\b/.test(promptText) &&
+      !/(generate|create|draw|make|ai)/.test(promptText);
+    if (looksLikeSearch) {
+      const query = promptText
+        .replace(/show me|search|find|images of|image of|photos of|photo of/gi, "")
+        .trim();
+      if (!query) throw new Error("Missing query");
+      const searchResult = await executeToolCall({
+        name: "search_library",
+        arguments: JSON.stringify({ query })
+      });
+      return { redirected_tool: "search_library", redirected_result: searchResult };
+    }
     const r = await fetch(
       `${baseUrl}/api/replicate`,
       {
@@ -549,6 +565,21 @@ async function executeToolCall(toolCall) {
     };
   }
 
+  if (
+    name === "play_slideshow" ||
+    name === "pause_slideshow" ||
+    name === "next_image" ||
+    name === "prev_image" ||
+    name === "download_image" ||
+    name === "toggle_fit" ||
+    name === "open_liked" ||
+    name === "close_liked" ||
+    name === "open_settings" ||
+    name === "close_settings"
+  ) {
+    return { ok: true };
+  }
+
   throw new Error("Unknown tool");
 }
 
@@ -633,6 +664,66 @@ app.post("/api/agent", asyncHandler(async (req, res) => {
         },
         required: ["prompt", "input_image"]
       }
+    },
+    {
+      type: "function",
+      name: "play_slideshow",
+      description: "Start slideshow playback.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "pause_slideshow",
+      description: "Pause slideshow playback.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "next_image",
+      description: "Go to the next image in the gallery.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "prev_image",
+      description: "Go to the previous image in the gallery.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "download_image",
+      description: "Download the current image.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "toggle_fit",
+      description: "Toggle image fit between contain and cover.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "open_liked",
+      description: "Open the liked panel.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "close_liked",
+      description: "Close the liked panel.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "open_settings",
+      description: "Open the settings sidebar.",
+      parameters: { type: "object", properties: {} }
+    },
+    {
+      type: "function",
+      name: "close_settings",
+      description: "Close the settings sidebar.",
+      parameters: { type: "object", properties: {} }
     }
   ];
 
@@ -640,6 +731,7 @@ app.post("/api/agent", asyncHandler(async (req, res) => {
     "You are VISTA Agent. You can chat normally or call a tool.",
     "Use tools only when user intent requires system action.",
     "If required parameters are missing, ask a brief question instead of calling tools.",
+    "If the user asks to search, always call search_library (do not generate).",
     "Do not ask the user which image library to use; choose automatically (default to Unsplash).",
     "If state includes preferred_ratio, use it when ratio/aspect_ratio is missing.",
     "Use set_view to switch between weather and gallery, and refresh_weather to update weather.",
@@ -709,6 +801,16 @@ app.post("/api/agent", asyncHandler(async (req, res) => {
             const count = Array.isArray(firstTool.result?.images) ? firstTool.result.images.length : 0;
             return count ? `Generated ${count} images.` : "Generation completed.";
           }
+          if (firstTool.name === "play_slideshow") return "Playback started.";
+          if (firstTool.name === "pause_slideshow") return "Playback paused.";
+          if (firstTool.name === "next_image") return "Next image.";
+          if (firstTool.name === "prev_image") return "Previous image.";
+          if (firstTool.name === "download_image") return "Download started.";
+          if (firstTool.name === "toggle_fit") return "Fit toggled.";
+          if (firstTool.name === "open_liked") return "Liked opened.";
+          if (firstTool.name === "close_liked") return "Liked closed.";
+          if (firstTool.name === "open_settings") return "Settings opened.";
+          if (firstTool.name === "close_settings") return "Settings closed.";
           return "Done.";
         })();
         return res.json({
@@ -746,15 +848,17 @@ app.post("/api/agent", asyncHandler(async (req, res) => {
         }
       }
       const result = await executeToolCall(call);
+      const resolvedName = result && result.redirected_tool ? result.redirected_tool : toolName;
+      const resolvedResult = result && result.redirected_tool ? result.redirected_result : result;
       toolResults.push({
-        name: toolName,
+        name: resolvedName,
         args: toolArgs,
-        result
+        result: resolvedResult
       });
       if (callId) {
         toolOutputs.push({
           tool_call_id: callId,
-          output: JSON.stringify(result)
+          output: JSON.stringify(resolvedResult)
         });
       }
     }
@@ -811,6 +915,16 @@ app.post("/api/agent", asyncHandler(async (req, res) => {
       if (firstTool.name === "refine_image") {
         return "Refine completed.";
       }
+      if (firstTool.name === "play_slideshow") return "Playback started.";
+      if (firstTool.name === "pause_slideshow") return "Playback paused.";
+      if (firstTool.name === "next_image") return "Next image.";
+      if (firstTool.name === "prev_image") return "Previous image.";
+      if (firstTool.name === "download_image") return "Download started.";
+      if (firstTool.name === "toggle_fit") return "Fit toggled.";
+      if (firstTool.name === "open_liked") return "Liked opened.";
+      if (firstTool.name === "close_liked") return "Liked closed.";
+      if (firstTool.name === "open_settings") return "Settings opened.";
+      if (firstTool.name === "close_settings") return "Settings closed.";
       return "Done.";
     })();
 
