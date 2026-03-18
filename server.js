@@ -1262,8 +1262,7 @@ app.post("/api/openai_image", asyncHandler(async (req, res) => {
         prompt,
         n: count || 1,
         size: size || "1024x1024",
-        model: model || "gpt-image-1",
-        response_format: "url"
+        model: model || "gpt-image-1"
       })
     });
 
@@ -1273,7 +1272,9 @@ app.post("/api/openai_image", asyncHandler(async (req, res) => {
     }
 
     const images = Array.isArray(data.data)
-      ? data.data.map((item) => item.url).filter(Boolean)
+      ? data.data
+          .map((item) => item.url || (item.b64_json ? `data:image/png;base64,${item.b64_json}` : ""))
+          .filter(Boolean)
       : [];
     res.json({ images });
   } catch (err) {
